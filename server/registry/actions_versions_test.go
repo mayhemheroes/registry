@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/apigee/registry/rpc"
 	"github.com/apigee/registry/server/registry/test/seeder"
@@ -48,6 +49,7 @@ func TestCreateApiVersion(t *testing.T) {
 					DisplayName: "My Display Name",
 					Description: "My Description",
 					State:       "My State",
+					PrimarySpec: "specs/my spec",
 					Labels: map[string]string{
 						"label-key": "label-value",
 					},
@@ -61,6 +63,7 @@ func TestCreateApiVersion(t *testing.T) {
 				DisplayName: "My Display Name",
 				Description: "My Description",
 				State:       "My State",
+				PrimarySpec: "specs/my spec",
 				Labels: map[string]string{
 					"label-key": "label-value",
 				},
@@ -1120,6 +1123,89 @@ func TestUpdateApiVersionResponseCodes(t *testing.T) {
 
 			if _, err := server.UpdateApiVersion(ctx, test.req); status.Code(err) != test.want {
 				t.Errorf("UpdateApiVersion(%+v) returned status code %q, want %q: %v", test.req, status.Code(err), test.want, err)
+			}
+		})
+	}
+}
+
+func TestUpdateApiVersionSequence(t *testing.T) {
+	tests := []struct {
+		desc string
+		req  *rpc.UpdateApiVersionRequest
+		want codes.Code
+	}{
+		{
+			desc: "create using update with allow_missing=false",
+			req: &rpc.UpdateApiVersionRequest{
+				ApiVersion: &rpc.ApiVersion{
+					Name: "projects/my-project/locations/global/apis/a/versions/v",
+				},
+				AllowMissing: false,
+			},
+			want: codes.NotFound,
+		},
+		{
+			desc: "create using update with allow_missing=true",
+			req: &rpc.UpdateApiVersionRequest{
+				ApiVersion: &rpc.ApiVersion{
+					Name: "projects/my-project/locations/global/apis/a/versions/v",
+				},
+				AllowMissing: true,
+			},
+			want: codes.OK,
+		},
+		{
+			desc: "update existing resource with allow_missing=true",
+			req: &rpc.UpdateApiVersionRequest{
+				ApiVersion: &rpc.ApiVersion{
+					Name: "projects/my-project/locations/global/apis/a/versions/v",
+				},
+				AllowMissing: true,
+			},
+			want: codes.OK,
+		},
+		{
+			desc: "update existing resource with allow_missing=false",
+			req: &rpc.UpdateApiVersionRequest{
+				ApiVersion: &rpc.ApiVersion{
+					Name: "projects/my-project/locations/global/apis/a/versions/v",
+				},
+				AllowMissing: false,
+			},
+			want: codes.OK,
+		},
+	}
+	ctx := context.Background()
+	server := defaultTestServer(t)
+	seed := &rpc.Api{Name: "projects/my-project/locations/global/apis/a"}
+	if err := seeder.SeedApis(ctx, server, seed); err != nil {
+		t.Fatalf("Setup/Seeding: Failed to seed registry: %s", err)
+	}
+	var createTime time.Time
+	var updateTime time.Time
+	// NOTE: in the following sequence of tests, each test depends on its predecessor.
+	// Resources are successively created and updated using the "Update" RPC and the
+	// tests verify that CreateTime/UpdateTime fields are modified appropriately.
+	for i, test := range tests {
+		t.Run(test.desc, func(t *testing.T) {
+			var result *rpc.ApiVersion
+			var err error
+			if result, err = server.UpdateApiVersion(ctx, test.req); status.Code(err) != test.want {
+				t.Errorf("UpdateApiVersion(%+v) returned status code %q, want %q: %v", test.req, status.Code(err), test.want, err)
+			}
+			if result != nil {
+				if i == 1 {
+					createTime = result.CreateTime.AsTime()
+					updateTime = result.UpdateTime.AsTime()
+				} else {
+					if !createTime.Equal(result.CreateTime.AsTime()) {
+						t.Errorf("UpdateApiVersion create time changed after update (%v %v)", createTime, result.CreateTime.AsTime())
+					}
+					if !updateTime.Before(result.UpdateTime.AsTime()) {
+						t.Errorf("UpdateApiVersion update time did not increase after update (%v %v)", updateTime, result.UpdateTime.AsTime())
+					}
+					updateTime = result.UpdateTime.AsTime()
+				}
 			}
 		})
 	}

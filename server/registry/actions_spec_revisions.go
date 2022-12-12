@@ -40,14 +40,16 @@ func (s *RegistryServer) ListApiSpecRevisions(ctx context.Context, req *rpc.List
 		req.PageSize = 50
 	}
 
-	parent, err := names.ParseSpec(req.GetName())
+	parent, err := names.ParseSpecRevision(req.GetName())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	listing, err := db.ListSpecRevisions(ctx, parent, storage.PageOptions{
-		Size:  req.GetPageSize(),
-		Token: req.GetPageToken(),
+		Size:   req.GetPageSize(),
+		Token:  req.GetPageToken(),
+		Filter: req.GetFilter(),
+		Order:  req.GetOrderBy(),
 	})
 	if err != nil {
 		return nil, err
@@ -103,6 +105,10 @@ func (s *RegistryServer) TagApiSpecRevision(ctx context.Context, req *rpc.TagApi
 	// The tag length must be valid.
 	if len(req.GetTag()) > 40 {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid tag %q, must be 40 characters or less", req.GetTag())
+	}
+	// The tag must match the required format.
+	if err := names.ValidateRevisionTag(req.GetTag()); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%s", err)
 	}
 	// The requested spec revision name must be valid. It may include a tag name.
 	name, err := names.ParseSpecRevision(req.GetName())

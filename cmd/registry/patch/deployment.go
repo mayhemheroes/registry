@@ -15,14 +15,31 @@
 package patch
 
 import (
+	"bytes"
 	"context"
 	"strings"
 
+	"github.com/apigee/registry/gapic"
 	"github.com/apigee/registry/pkg/connection"
 	"github.com/apigee/registry/pkg/models"
 	"github.com/apigee/registry/rpc"
 	"github.com/apigee/registry/server/registry/names"
+	"gopkg.in/yaml.v3"
 )
+
+// ExportAPIDeployment allows an API deployment to be individually exported as a YAML file.
+func ExportAPIDeployment(ctx context.Context, client *gapic.RegistryClient, message *rpc.ApiDeployment, nested bool) ([]byte, *models.Header, error) {
+	api, err := newApiDeployment(ctx, client, message, nested)
+	if err != nil {
+		return nil, nil, err
+	}
+	var b bytes.Buffer
+	err = yamlEncoder(&b).Encode(api)
+	if err != nil {
+		return nil, nil, err
+	}
+	return b.Bytes(), &api.Header, nil
+}
 
 // relativeSpecRevisionName returns the versionid+specid if the spec is within the specified API
 func relativeSpecRevisionName(apiName names.Api, spec string) string {
@@ -43,18 +60,26 @@ func optionalSpecRevisionName(deploymentName names.Deployment, subpath string) s
 	return deploymentName.Api().String() + "/versions/" + subpath
 }
 
-func newApiDeployment(message *rpc.ApiDeployment) (*models.ApiDeployment, error) {
+func newApiDeployment(ctx context.Context, client *gapic.RegistryClient, message *rpc.ApiDeployment, nested bool) (*models.ApiDeployment, error) {
 	deploymentName, err := names.ParseDeployment(message.Name)
 	if err != nil {
 		return nil, err
 	}
 	revisionName := relativeSpecRevisionName(deploymentName.Api(), message.ApiSpecRevision)
+	var artifacts []*models.Artifact
+	if nested {
+		artifacts, err = collectChildArtifacts(ctx, client, deploymentName.Artifact("-"))
+		if err != nil {
+			return nil, err
+		}
+	}
 	return &models.ApiDeployment{
 		Header: models.Header{
 			ApiVersion: RegistryV1,
-			Kind:       "ApiDeployment",
+			Kind:       "Deployment",
 			Metadata: models.Metadata{
 				Name:        deploymentName.DeploymentID,
+				Parent:      names.ExportableName(deploymentName.Parent(), deploymentName.ProjectID),
 				Labels:      message.Labels,
 				Annotations: message.Annotations,
 			},
@@ -67,8 +92,26 @@ func newApiDeployment(message *rpc.ApiDeployment) (*models.ApiDeployment, error)
 			IntendedAudience:   message.IntendedAudience,
 			AccessGuidance:     message.AccessGuidance,
 			ApiSpecRevision:    revisionName,
+			Artifacts:          artifacts,
 		},
 	}, nil
+}
+
+func applyApiDeploymentPatchBytes(ctx context.Context, client connection.RegistryClient, bytes []byte, parent string) error {
+	var deployment models.ApiDeployment
+	err := yaml.Unmarshal(bytes, &deployment)
+	if err != nil {
+		return err
+	}
+	return applyApiDeploymentPatch(ctx, client, &deployment, parent)
+}
+
+func deploymentName(parent, deploymentID string) (names.Deployment, error) {
+	api, err := names.ParseApi(parent)
+	if err != nil {
+		return names.Deployment{}, err
+	}
+	return api.Deployment(deploymentID), nil
 }
 
 func applyApiDeploymentPatch(
@@ -76,14 +119,13 @@ func applyApiDeploymentPatch(
 	client connection.RegistryClient,
 	deployment *models.ApiDeployment,
 	parent string) error {
-	apiName, err := names.ParseApi(parent)
+	name, err := deploymentName(parent, deployment.Metadata.Name)
 	if err != nil {
 		return err
 	}
-	deploymentName := apiName.Deployment(deployment.Metadata.Name)
 	req := &rpc.UpdateApiDeploymentRequest{
 		ApiDeployment: &rpc.ApiDeployment{
-			Name:               deploymentName.String(),
+			Name:               name.String(),
 			DisplayName:        deployment.Data.DisplayName,
 			Description:        deployment.Data.Description,
 			EndpointUri:        deployment.Data.EndpointURI,
@@ -95,10 +137,19 @@ func applyApiDeploymentPatch(
 		},
 		AllowMissing: true,
 	}
-	req.ApiDeployment.ApiSpecRevision = optionalSpecRevisionName(deploymentName, deployment.Data.ApiSpecRevision)
+	req.ApiDeployment.ApiSpecRevision = optionalSpecRevisionName(name, deployment.Data.ApiSpecRevision)
 	if err != nil {
 		return err
 	}
 	_, err = client.UpdateApiDeployment(ctx, req)
-	return err
+	if err != nil {
+		return err
+	}
+	for _, artifactPatch := range deployment.Data.Artifacts {
+		err = applyArtifactPatch(ctx, client, artifactPatch, name.String())
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

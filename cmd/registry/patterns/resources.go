@@ -41,7 +41,8 @@ type ResourceName interface {
 }
 
 type SpecName struct {
-	Name names.Spec
+	Name       names.Spec
+	RevisionID string
 }
 
 func (s SpecName) Artifact() string {
@@ -49,7 +50,7 @@ func (s SpecName) Artifact() string {
 }
 
 func (s SpecName) Spec() string {
-	return s.Name.String()
+	return s.String()
 }
 
 func (s SpecName) Version() string {
@@ -65,7 +66,11 @@ func (s SpecName) Project() string {
 }
 
 func (s SpecName) String() string {
-	return s.Name.String()
+	if s.RevisionID == "" {
+		return s.Name.String()
+	} else {
+		return s.Name.String() + "@" + s.RevisionID
+	}
 }
 
 func (s SpecName) ParentName() ResourceName {
@@ -213,17 +218,18 @@ func (ar ArtifactName) Artifact() string {
 }
 
 func (ar ArtifactName) Spec() string {
-	specPattern := names.Spec{
-		ProjectID: ar.Name.ProjectID(),
-		ApiID:     ar.Name.ApiID(),
-		VersionID: ar.Name.VersionID(),
-		SpecID:    ar.Name.SpecID(),
+	specPattern := names.SpecRevision{
+		ProjectID:  ar.Name.ProjectID(),
+		ApiID:      ar.Name.ApiID(),
+		VersionID:  ar.Name.VersionID(),
+		SpecID:     ar.Name.SpecID(),
+		RevisionID: ar.Name.RevisionID(),
 	}
 
 	// Validate the generated name
-	if spec, err := names.ParseSpec(specPattern.String()); err == nil {
+	if spec, err := names.ParseSpecRevision(specPattern.String()); err == nil {
 		return spec.String()
-	} else if _, err := names.ParseSpecCollection(specPattern.String()); err == nil {
+	} else if _, err := names.ParseSpecRevisionCollection(specPattern.String()); err == nil {
 		return spec.String()
 	}
 
@@ -294,9 +300,10 @@ func (ar ArtifactName) ParentName() ResourceName {
 		return VersionName{
 			Name: version,
 		}
-	} else if spec, err := names.ParseSpecCollection(parent); err == nil {
+	} else if spec, err := names.ParseSpecRevisionCollection(parent); err == nil {
 		return SpecName{
-			Name: spec,
+			Name:       spec.Spec(),
+			RevisionID: spec.RevisionID,
 		}
 	}
 
@@ -317,9 +324,10 @@ func (ar ArtifactName) ParentName() ResourceName {
 		return VersionName{
 			Name: version,
 		}
-	} else if spec, err := names.ParseSpec(parent); err == nil {
+	} else if spec, err := names.ParseSpecRevision(parent); err == nil {
 		return SpecName{
-			Name: spec,
+			Name:       spec.Spec(),
+			RevisionID: spec.RevisionID,
 		}
 	}
 
@@ -334,68 +342,89 @@ type ResourceInstance interface {
 }
 
 type SpecResource struct {
-	SpecName  ResourceName
-	Timestamp time.Time
+	Spec *rpc.ApiSpec
 }
 
 func (s SpecResource) UpdateTimestamp() time.Time {
-	return s.Timestamp
+	return s.Spec.RevisionUpdateTime.AsTime()
 }
 
 func (s SpecResource) ResourceName() ResourceName {
-	return s.SpecName
+	name, err := names.ParseSpecRevision(s.Spec.GetName())
+	if err != nil {
+		return nil
+	}
+	return SpecName{
+		Name:       name.Spec(),
+		RevisionID: s.Spec.RevisionId,
+	}
 }
 
 type VersionResource struct {
-	VersionName ResourceName
-	Timestamp   time.Time
+	Version *rpc.ApiVersion
 }
 
 func (v VersionResource) UpdateTimestamp() time.Time {
-	return v.Timestamp
+	return v.Version.UpdateTime.AsTime()
 }
 
 func (v VersionResource) ResourceName() ResourceName {
-	return v.VersionName
+	name, err := names.ParseVersion(v.Version.GetName())
+	if err != nil {
+		return nil
+	}
+	return VersionName{Name: name}
 }
 
 type ApiResource struct {
-	ApiName   ResourceName
-	Timestamp time.Time
+	Api *rpc.Api
 }
 
 func (a ApiResource) UpdateTimestamp() time.Time {
-	return a.Timestamp
+	return a.Api.UpdateTime.AsTime()
 }
 
 func (a ApiResource) ResourceName() ResourceName {
-	return a.ApiName
+	name, err := names.ParseApi(a.Api.GetName())
+	if err != nil {
+		return nil
+	}
+	return ApiName{Name: name}
 }
 
+// Project is a special resource which is not available through the registry client.
+// Hence we won't store the actual instance of the rpc.Project but instead only store the project name.
+// ProjectResource is mainly used to identify by name when we derive the parents of certain artifacts.
 type ProjectResource struct {
-	ProjectName ResourceName
-	Timestamp   time.Time
+	ProjectName string
 }
 
 func (p ProjectResource) UpdateTimestamp() time.Time {
-	return p.Timestamp
+	return time.Time{}
 }
 
 func (p ProjectResource) ResourceName() ResourceName {
-	return p.ProjectName
+	name, err := names.ParseProject(p.ProjectName)
+	if err != nil {
+		return nil
+	}
+	return ProjectName{Name: name}
 }
 
 type ArtifactResource struct {
-	ArtifactName ResourceName
-	Timestamp    time.Time
+	Artifact *rpc.Artifact
 }
 
 func (ar ArtifactResource) UpdateTimestamp() time.Time {
-	return ar.Timestamp
+	return ar.Artifact.UpdateTime.AsTime()
 }
 
 func (ar ArtifactResource) ResourceName() ResourceName {
-	return ar.ArtifactName
+	name, err := names.ParseArtifact(ar.Artifact.GetName())
+	if err != nil {
+		return nil
+	}
+	return ArtifactName{Name: name}
 }
 
 func ListResources(ctx context.Context, client connection.RegistryClient, pattern, filter string) ([]ResourceInstance, error) {
@@ -409,8 +438,10 @@ func ListResources(ctx context.Context, client connection.RegistryClient, patter
 		err2 = core.ListVersions(ctx, client, version, filter, generateVersionHandler(&result))
 	} else if spec, err := names.ParseSpecCollection(pattern); err == nil {
 		err2 = core.ListSpecs(ctx, client, spec, filter, generateSpecHandler(&result))
+	} else if rev, err := names.ParseSpecRevisionCollection(pattern); err == nil {
+		err2 = core.ListSpecRevisions(ctx, client, rev, filter, generateSpecHandler(&result))
 	} else if artifact, err := names.ParseArtifactCollection(pattern); err == nil {
-		err2 = core.ListArtifacts(ctx, client, artifact, filter, false, generateArtifactHandler(&result))
+		err2 = core.ListArtifacts(ctx, client, artifact, filter, true, generateArtifactHandler(&result))
 	}
 
 	// Then try to match resource names.
@@ -420,8 +451,10 @@ func ListResources(ctx context.Context, client connection.RegistryClient, patter
 		err2 = core.ListVersions(ctx, client, version, filter, generateVersionHandler(&result))
 	} else if spec, err := names.ParseSpec(pattern); err == nil {
 		err2 = core.ListSpecs(ctx, client, spec, filter, generateSpecHandler(&result))
+	} else if rev, err := names.ParseSpecRevision(pattern); err == nil {
+		err2 = core.ListSpecRevisions(ctx, client, rev, filter, generateSpecHandler(&result))
 	} else if artifact, err := names.ParseArtifact(pattern); err == nil {
-		err2 = core.ListArtifacts(ctx, client, artifact, filter, false, generateArtifactHandler(&result))
+		err2 = core.ListArtifacts(ctx, client, artifact, filter, true, generateArtifactHandler(&result))
 	}
 
 	if err2 != nil {
@@ -433,64 +466,36 @@ func ListResources(ctx context.Context, client connection.RegistryClient, patter
 
 func generateApiHandler(result *[]ResourceInstance) func(*rpc.Api) error {
 	return func(api *rpc.Api) error {
-		name, err := names.ParseApi(api.GetName())
-		if err != nil {
-			return err
-		}
-
 		(*result) = append((*result), ApiResource{
-			ApiName:   ApiName{Name: name},
-			Timestamp: api.UpdateTime.AsTime(),
+			Api: api,
 		})
-
 		return nil
 	}
 }
 
 func generateVersionHandler(result *[]ResourceInstance) func(*rpc.ApiVersion) error {
 	return func(version *rpc.ApiVersion) error {
-		name, err := names.ParseVersion(version.GetName())
-		if err != nil {
-			return err
-		}
-
 		(*result) = append((*result), VersionResource{
-			VersionName: VersionName{Name: name},
-			Timestamp:   version.UpdateTime.AsTime(),
+			Version: version,
 		})
-
 		return nil
 	}
 }
 
 func generateSpecHandler(result *[]ResourceInstance) func(*rpc.ApiSpec) error {
 	return func(spec *rpc.ApiSpec) error {
-		name, err := names.ParseSpec(spec.GetName())
-		if err != nil {
-			return err
-		}
-
 		(*result) = append((*result), SpecResource{
-			SpecName:  SpecName{Name: name},
-			Timestamp: spec.RevisionUpdateTime.AsTime(),
+			Spec: spec,
 		})
-
 		return nil
 	}
 }
 
 func generateArtifactHandler(result *[]ResourceInstance) func(*rpc.Artifact) error {
 	return func(artifact *rpc.Artifact) error {
-		name, err := names.ParseArtifact(artifact.GetName())
-		if err != nil {
-			return err
-		}
-
 		(*result) = append((*result), ArtifactResource{
-			ArtifactName: ArtifactName{Name: name},
-			Timestamp:    artifact.UpdateTime.AsTime(),
+			Artifact: artifact,
 		})
-
 		return nil
 	}
 }

@@ -162,6 +162,51 @@ func TestTagApiDeploymentRevision(t *testing.T) {
 	})
 }
 
+func TestTagApiDeploymentRevisionResponseCodes(t *testing.T) {
+	tests := []struct {
+		desc string
+		tag  string
+		want codes.Code
+	}{
+		{
+			desc: "contains uppercase leters",
+			tag:  "TestTag",
+			want: codes.InvalidArgument,
+		},
+		{
+			desc: "single dash",
+			tag:  "-",
+			want: codes.InvalidArgument,
+		},
+		{
+			desc: "valid one-character tag",
+			tag:  "x",
+			want: codes.OK,
+		},
+		{
+			desc: "valid tag",
+			tag:  "latest",
+			want: codes.OK,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.desc, func(t *testing.T) {
+			ctx := context.Background()
+			server := defaultTestServer(t)
+			if err := seeder.SeedDeployments(ctx, server, &rpc.ApiDeployment{Name: "projects/my-project/locations/global/apis/a/deployments/d"}); err != nil {
+				t.Fatalf("Setup/Seeding: Failed to seed registry: %s", err)
+			}
+			if _, err := server.TagApiDeploymentRevision(ctx, &rpc.TagApiDeploymentRevisionRequest{
+				Name: "projects/my-project/locations/global/apis/a/deployments/d",
+				Tag:  test.tag,
+			}); status.Code(err) != test.want {
+				t.Errorf("TagApiDeploymentRevision(%+v) returned status code %q, want %q: %v", test.tag, status.Code(err), test.want, err)
+			}
+		})
+	}
+}
+
 func TestRollbackApiDeployment(t *testing.T) {
 	ctx := context.Background()
 	server := defaultTestServer(t)
@@ -301,7 +346,7 @@ func TestListApiDeploymentRevisions(t *testing.T) {
 		wantToken bool
 	}{
 		{
-			desc: "single deployment",
+			desc: "single deployment latest rev",
 			seed: []*rpc.ApiDeployment{
 				{
 					Name: "projects/my-project/locations/global/apis/my-api/deployments/my-dep",
@@ -323,6 +368,32 @@ func TestListApiDeploymentRevisions(t *testing.T) {
 						Name:        "projects/my-project/locations/global/apis/my-api/deployments/my-dep",
 						EndpointUri: "updated",
 					},
+				},
+			},
+		},
+		{
+			desc: "single deployment all revs",
+			seed: []*rpc.ApiDeployment{
+				{
+					Name: "projects/my-project/locations/global/apis/my-api/deployments/my-dep",
+				},
+				{
+					Name:        "projects/my-project/locations/global/apis/my-api/deployments/my-dep",
+					EndpointUri: "updated",
+				},
+				{
+					Name: "projects/my-project/locations/global/apis/my-api/deployments/other-dep",
+				},
+			},
+			req: &rpc.ListApiDeploymentRevisionsRequest{
+				Name: "projects/my-project/locations/global/apis/my-api/deployments/my-dep@-",
+			},
+			want: &rpc.ListApiDeploymentRevisionsResponse{
+				ApiDeployments: []*rpc.ApiDeployment{
+					{
+						Name:        "projects/my-project/locations/global/apis/my-api/deployments/my-dep",
+						EndpointUri: "updated",
+					},
 					{
 						Name: "projects/my-project/locations/global/apis/my-api/deployments/my-dep",
 					},
@@ -330,56 +401,56 @@ func TestListApiDeploymentRevisions(t *testing.T) {
 			},
 		},
 		{
-			desc: "across multiple deployments",
+			desc: "across multiple deployments all revs",
 			seed: []*rpc.ApiDeployment{
 				{Name: "projects/my-project/locations/global/apis/my-api/deployments/my-dep"},
 				{Name: "projects/my-project/locations/global/apis/my-api/deployments/other-dep"},
 			},
 			req: &rpc.ListApiDeploymentRevisionsRequest{
-				Name: "projects/my-project/locations/global/apis/my-api/deployments/-",
+				Name: "projects/my-project/locations/global/apis/my-api/deployments/-@-",
 			},
 			want: &rpc.ListApiDeploymentRevisionsResponse{
 				ApiDeployments: []*rpc.ApiDeployment{
-					{Name: "projects/my-project/locations/global/apis/my-api/deployments/other-dep"},
 					{Name: "projects/my-project/locations/global/apis/my-api/deployments/my-dep"},
+					{Name: "projects/my-project/locations/global/apis/my-api/deployments/other-dep"},
 				},
 			},
 		},
 		{
-			desc: "across multiple apis",
+			desc: "across multiple apis all revs",
 			seed: []*rpc.ApiDeployment{
 				{Name: "projects/my-project/locations/global/apis/my-api/deployments/my-dep"},
 				{Name: "projects/my-project/locations/global/apis/other-api/deployments/my-dep"},
 			},
 			req: &rpc.ListApiDeploymentRevisionsRequest{
-				Name: "projects/my-project/locations/global/apis/-/deployments/my-dep",
+				Name: "projects/my-project/locations/global/apis/-/deployments/my-dep@-",
 			},
 			want: &rpc.ListApiDeploymentRevisionsResponse{
 				ApiDeployments: []*rpc.ApiDeployment{
-					{Name: "projects/my-project/locations/global/apis/other-api/deployments/my-dep"},
 					{Name: "projects/my-project/locations/global/apis/my-api/deployments/my-dep"},
+					{Name: "projects/my-project/locations/global/apis/other-api/deployments/my-dep"},
 				},
 			},
 		},
 		{
 			admin: true,
-			desc:  "across multiple projects",
+			desc:  "across multiple projects all revs",
 			seed: []*rpc.ApiDeployment{
 				{Name: "projects/my-project/locations/global/apis/my-api/deployments/my-dep"},
 				{Name: "projects/other-project/locations/global/apis/my-api/deployments/my-dep"},
 			},
 			req: &rpc.ListApiDeploymentRevisionsRequest{
-				Name: "projects/-/locations/global/apis/my-api/deployments/my-dep",
+				Name: "projects/-/locations/global/apis/my-api/deployments/my-dep@-",
 			},
 			want: &rpc.ListApiDeploymentRevisionsResponse{
 				ApiDeployments: []*rpc.ApiDeployment{
-					{Name: "projects/other-project/locations/global/apis/my-api/deployments/my-dep"},
 					{Name: "projects/my-project/locations/global/apis/my-api/deployments/my-dep"},
+					{Name: "projects/other-project/locations/global/apis/my-api/deployments/my-dep"},
 				},
 			},
 		},
 		{
-			desc: "custom page size",
+			desc: "custom page size, single spec all revs",
 			seed: []*rpc.ApiDeployment{
 				{
 					Name: "projects/my-project/locations/global/apis/my-api/deployments/my-dep",
@@ -390,7 +461,7 @@ func TestListApiDeploymentRevisions(t *testing.T) {
 				},
 			},
 			req: &rpc.ListApiDeploymentRevisionsRequest{
-				Name:     "projects/my-project/locations/global/apis/my-api/deployments/my-dep",
+				Name:     "projects/my-project/locations/global/apis/my-api/deployments/my-dep@-",
 				PageSize: 1,
 			},
 			want: &rpc.ListApiDeploymentRevisionsResponse{
@@ -402,6 +473,46 @@ func TestListApiDeploymentRevisions(t *testing.T) {
 				},
 			},
 			wantToken: true,
+		},
+		{
+			desc: "name filtering",
+			seed: []*rpc.ApiDeployment{
+				{Name: "projects/my-project/locations/global/apis/my-api/deployments/dep1"},
+				{
+					Name:        "projects/my-project/locations/global/apis/my-api/deployments/dep2",
+					Description: "match",
+				},
+				{Name: "projects/my-project/locations/global/apis/my-api/deployments/dep3"},
+			},
+			req: &rpc.ListApiDeploymentRevisionsRequest{
+				Name:   "projects/my-project/locations/global/apis/my-api/deployments/-@-",
+				Filter: "description == 'match'",
+			},
+			want: &rpc.ListApiDeploymentRevisionsResponse{
+				ApiDeployments: []*rpc.ApiDeployment{
+					{
+						Name:        "projects/my-project/locations/global/apis/my-api/deployments/dep2",
+						Description: "match",
+					},
+				},
+			},
+		},
+		{
+			desc: "reverse order",
+			seed: []*rpc.ApiDeployment{
+				{Name: "projects/my-project/locations/global/apis/my-api/deployments/my-dep"},
+				{Name: "projects/my-project/locations/global/apis/my-api/deployments/other-dep"},
+			},
+			req: &rpc.ListApiDeploymentRevisionsRequest{
+				Name:    "projects/my-project/locations/global/apis/my-api/deployments/-@-",
+				OrderBy: "name desc",
+			},
+			want: &rpc.ListApiDeploymentRevisionsResponse{
+				ApiDeployments: []*rpc.ApiDeployment{
+					{Name: "projects/my-project/locations/global/apis/my-api/deployments/other-dep"},
+					{Name: "projects/my-project/locations/global/apis/my-api/deployments/my-dep"},
+				},
+			},
 		},
 	}
 
@@ -504,7 +615,7 @@ func TestListApiDeploymentRevisionsSequence(t *testing.T) {
 	var nextToken string
 	t.Run("first page", func(t *testing.T) {
 		req := &rpc.ListApiDeploymentRevisionsRequest{
-			Name:     firstRevision.GetName(),
+			Name:     firstRevision.GetName() + "@-",
 			PageSize: 1,
 		}
 
@@ -536,7 +647,7 @@ func TestListApiDeploymentRevisionsSequence(t *testing.T) {
 
 	t.Run("final page", func(t *testing.T) {
 		req := &rpc.ListApiDeploymentRevisionsRequest{
-			Name:      firstRevision.GetName(),
+			Name:      firstRevision.GetName() + "@-",
 			PageToken: nextToken,
 		}
 

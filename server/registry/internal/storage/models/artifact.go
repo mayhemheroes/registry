@@ -33,6 +33,7 @@ type Artifact struct {
 	ApiID        string    // Api associated with artifact (if appropriate).
 	VersionID    string    // Version associated with artifact (if appropriate).
 	SpecID       string    // Spec associated with artifact (if appropriate).
+	RevisionID   string    // Revision associated with parent (if appropriate).
 	DeploymentID string    // Deployment associated with artifact (if appropriate).
 	ArtifactID   string    // Artifact identifier (required).
 	CreateTime   time.Time // Creation time.
@@ -40,6 +41,8 @@ type Artifact struct {
 	MimeType     string    // MIME type of artifact
 	SizeInBytes  int32     // Size of the spec.
 	Hash         string    // A hash of the spec.
+	Labels       []byte    // Serialized labels.
+	Annotations  []byte    // Serialized annotations.
 }
 
 // NewArtifact initializes a new resource.
@@ -50,6 +53,7 @@ func NewArtifact(name names.Artifact, body *rpc.Artifact) (artifact *Artifact, e
 		ApiID:        name.ApiID(),
 		VersionID:    name.VersionID(),
 		SpecID:       name.SpecID(),
+		RevisionID:   name.RevisionID(),
 		DeploymentID: name.DeploymentID(),
 		ArtifactID:   name.ArtifactID(),
 		CreateTime:   now,
@@ -70,6 +74,16 @@ func NewArtifact(name names.Artifact, body *rpc.Artifact) (artifact *Artifact, e
 		artifact.Hash = hashForBytes(contents)
 	}
 
+	artifact.Labels, err = bytesForMap(body.GetLabels())
+	if err != nil {
+		return nil, err
+	}
+
+	artifact.Annotations, err = bytesForMap(body.GetAnnotations())
+	if err != nil {
+		return nil, err
+	}
+
 	return artifact, nil
 }
 
@@ -77,14 +91,14 @@ func NewArtifact(name names.Artifact, body *rpc.Artifact) (artifact *Artifact, e
 func (artifact *Artifact) Name() string {
 	switch {
 	case artifact.SpecID != "":
-		return fmt.Sprintf("projects/%s/locations/%s/apis/%s/versions/%s/specs/%s/artifacts/%s",
-			artifact.ProjectID, names.Location, artifact.ApiID, artifact.VersionID, artifact.SpecID, artifact.ArtifactID)
+		return fmt.Sprintf("projects/%s/locations/%s/apis/%s/versions/%s/specs/%s@%s/artifacts/%s",
+			artifact.ProjectID, names.Location, artifact.ApiID, artifact.VersionID, artifact.SpecID, artifact.RevisionID, artifact.ArtifactID)
 	case artifact.VersionID != "":
 		return fmt.Sprintf("projects/%s/locations/%s/apis/%s/versions/%s/artifacts/%s",
 			artifact.ProjectID, names.Location, artifact.ApiID, artifact.VersionID, artifact.ArtifactID)
 	case artifact.DeploymentID != "":
-		return fmt.Sprintf("projects/%s/locations/%s/apis/%s/deployments/%s/artifacts/%s",
-			artifact.ProjectID, names.Location, artifact.ApiID, artifact.DeploymentID, artifact.ArtifactID)
+		return fmt.Sprintf("projects/%s/locations/%s/apis/%s/deployments/%s@%s/artifacts/%s",
+			artifact.ProjectID, names.Location, artifact.ApiID, artifact.DeploymentID, artifact.RevisionID, artifact.ArtifactID)
 	case artifact.ApiID != "":
 		return fmt.Sprintf("projects/%s/locations/%s/apis/%s/artifacts/%s",
 			artifact.ProjectID, names.Location, artifact.ApiID, artifact.ArtifactID)
@@ -97,8 +111,8 @@ func (artifact *Artifact) Name() string {
 }
 
 // Message returns an RPC message representing the artifact.
-func (artifact *Artifact) Message() *rpc.Artifact {
-	return &rpc.Artifact{
+func (artifact *Artifact) Message() (message *rpc.Artifact, err error) {
+	message = &rpc.Artifact{
 		Name:       artifact.Name(),
 		MimeType:   artifact.MimeType,
 		SizeBytes:  artifact.SizeInBytes,
@@ -106,4 +120,21 @@ func (artifact *Artifact) Message() *rpc.Artifact {
 		CreateTime: timestamppb.New(artifact.CreateTime),
 		UpdateTime: timestamppb.New(artifact.UpdateTime),
 	}
+
+	message.Labels, err = artifact.LabelsMap()
+	if err != nil {
+		return nil, err
+	}
+
+	message.Annotations, err = mapForBytes(artifact.Annotations)
+	if err != nil {
+		return nil, err
+	}
+
+	return message, nil
+}
+
+// LabelsMap returns a map representation of stored labels.
+func (artifact *Artifact) LabelsMap() (map[string]string, error) {
+	return mapForBytes(artifact.Labels)
 }

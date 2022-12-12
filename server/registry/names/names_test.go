@@ -169,6 +169,10 @@ func TestResourceNames(t *testing.T) {
 			},
 			pass: []string{
 				"projects/google/locations/global/apis/sample/versions/v1/specs/openapi.yaml@1234567890abcdef",
+				"projects/google/locations/global/apis/sample/versions/v1/specs/openapi.yaml",
+				"projects/-/locations/global/apis/-/versions/-/specs/-",
+				"projects/123/locations/global/apis/abc/versions/123/specs/abc",
+				"projects/1-2-3/locations/global/apis/abc/versions/123/specs/abc",
 			},
 			fail: []string{
 				"-",
@@ -177,10 +181,6 @@ func TestResourceNames(t *testing.T) {
 				"projects/123/locations/global/apis/",
 				"projects/123/locations/global/invalid/123",
 				"projects/123/locations/global/apis/ 123",
-				"projects/google/locations/global/apis/sample/versions/v1/specs/openapi.yaml",
-				"projects/-/locations/global/apis/-/versions/-/specs/-",
-				"projects/123/locations/global/apis/abc/versions/123/specs/abc",
-				"projects/1-2-3/locations/global/apis/abc/versions/123/specs/abc",
 			},
 		},
 		{
@@ -225,6 +225,10 @@ func TestResourceNames(t *testing.T) {
 				return err == nil
 			}, pass: []string{
 				"projects/google/locations/global/apis/sample/deployments/v1@1234567890abcdef",
+				"projects/google/locations/global/apis/sample/deployments/v1",
+				"projects/-/locations/global/apis/-/deployments/-",
+				"projects/123/locations/global/apis/abc/deployments/123",
+				"projects/1-2-3/locations/global/apis/abc/deployments/123",
 			},
 			fail: []string{
 				"-",
@@ -233,10 +237,6 @@ func TestResourceNames(t *testing.T) {
 				"projects/123/locations/global/apis/",
 				"projects/123/locations/global/invalid/123",
 				"projects/123/locations/global/apis/ 123",
-				"projects/google/locations/global/apis/sample/deployments/v1",
-				"projects/-/locations/global/apis/-/deployments/-",
-				"projects/123/locations/global/apis/abc/deployments/123",
-				"projects/1-2-3/locations/global/apis/abc/deployments/123",
 			},
 		},
 		{
@@ -275,15 +275,127 @@ func TestResourceNames(t *testing.T) {
 		},
 	}
 	for _, g := range groups {
-		for _, path := range g.pass {
-			if !g.check(path) {
-				t.Errorf("failed to match %s: %s", g.name, path)
+		t.Run(g.name, func(t *testing.T) {
+			for _, path := range g.pass {
+				if !g.check(path) {
+					t.Errorf("failed to match: %s", path)
+				}
 			}
-		}
-		for _, path := range g.fail {
-			if g.check(path) {
-				t.Errorf("false match %s: %s", g.name, path)
+			for _, path := range g.fail {
+				if g.check(path) {
+					t.Errorf("false match: %s", path)
+				}
 			}
-		}
+		})
+	}
+}
+
+func TestRevisionTags(t *testing.T) {
+	tests := []struct {
+		desc  string
+		tag   string
+		valid bool
+	}{
+		{
+			desc:  "all letters",
+			tag:   "sample",
+			valid: true,
+		},
+		{
+			desc:  "letters numbers and dashes",
+			tag:   "alpha-1-beta-2-gamma-3",
+			valid: true,
+		},
+		{
+			desc:  "mixed case",
+			tag:   "MixedCase",
+			valid: false,
+		},
+		{
+			desc:  "one letter",
+			tag:   "x",
+			valid: true,
+		},
+		{
+			desc:  "one digit",
+			tag:   "9",
+			valid: true,
+		},
+		{
+			desc:  "one dash",
+			tag:   "-",
+			valid: false,
+		},
+		{
+			desc:  "two dashes",
+			tag:   "--",
+			valid: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.desc, func(t *testing.T) {
+			err := ValidateRevisionTag(test.tag)
+			if test.valid {
+				if err != nil {
+					t.Errorf("%s should be valid but was rejected with error %s", test.tag, err)
+				}
+			} else {
+				if err == nil {
+					t.Errorf("%s should be invalid but was accepted", test.tag)
+				}
+			}
+		})
+	}
+}
+
+func TestExportableName(t *testing.T) {
+	tests := []struct {
+		name       string
+		projectID  string
+		exportable string
+	}{
+		{
+			name:       "projects/my-project/locations/global/apis/a",
+			projectID:  "my-project",
+			exportable: "apis/a",
+		},
+		{
+			name:       "projects/my-project/locations/global/apis/a/versions/v",
+			projectID:  "my-project",
+			exportable: "apis/a/versions/v",
+		},
+		{
+			name:       "projects/my-project/locations/global/apis/a/versions/v/specs/s",
+			projectID:  "my-project",
+			exportable: "apis/a/versions/v/specs/s",
+		},
+		{
+			name:       "projects/my-project/locations/global/apis/a/versions/v/specs/s@123",
+			projectID:  "my-project",
+			exportable: "apis/a/versions/v/specs/s",
+		},
+		{
+			name:       "projects/my-project/locations/global/apis/a/deployments/d",
+			projectID:  "my-project",
+			exportable: "apis/a/deployments/d",
+		},
+		{
+			name:       "projects/my-project/locations/global/apis/a/deployments/d@123",
+			projectID:  "my-project",
+			exportable: "apis/a/deployments/d",
+		},
+		{
+			name:       "projects/another-project/locations/global/artifacts/x",
+			projectID:  "another-project",
+			exportable: "artifacts/x",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			exportable := ExportableName(test.name, test.projectID)
+			if exportable != test.exportable {
+				t.Errorf("exportable name of %s should be %s but was %s", test.name, test.exportable, exportable)
+			}
+		})
 	}
 }

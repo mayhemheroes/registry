@@ -145,7 +145,10 @@ func newArtifact(message *rpc.Artifact) (*models.Artifact, error) {
 			ApiVersion: RegistryV1,
 			Kind:       kindForMimeType(message.MimeType),
 			Metadata: models.Metadata{
-				Name: artifactName.ArtifactID(),
+				Name:        artifactName.ArtifactID(),
+				Parent:      names.ExportableName(artifactName.Parent(), artifactName.ProjectID()),
+				Labels:      message.Labels,
+				Annotations: message.Annotations,
 			},
 		},
 		Data: *node,
@@ -159,6 +162,10 @@ func applyArtifactPatchBytes(ctx context.Context, client connection.RegistryClie
 		return err
 	}
 	return applyArtifactPatch(ctx, client, &artifact, parent)
+}
+
+func artifactName(parent, artifactID string) (names.Artifact, error) {
+	return names.ParseArtifact(parent + "/artifacts/" + artifactID)
 }
 
 func applyArtifactPatch(ctx context.Context, client connection.RegistryClient, content *models.Artifact, parent string) error {
@@ -189,14 +196,20 @@ func applyArtifactPatch(ctx context.Context, client connection.RegistryClient, c
 	if err != nil {
 		return err
 	}
+	name, err := artifactName(parent, content.Header.Metadata.Name)
+	if err != nil {
+		return err
+	}
 	artifact := &rpc.Artifact{
-		Name:     fmt.Sprintf("%s/artifacts/%s", parent, content.Header.Metadata.Name),
-		MimeType: MimeTypeForKind(content.Kind),
-		Contents: bytes,
+		Name:        name.String(),
+		MimeType:    MimeTypeForKind(content.Kind),
+		Contents:    bytes,
+		Labels:      content.Metadata.Labels,
+		Annotations: content.Metadata.Annotations,
 	}
 	req := &rpc.CreateArtifactRequest{
-		Parent:     parent,
-		ArtifactId: content.Header.Metadata.Name,
+		Parent:     name.Parent(),
+		ArtifactId: name.ArtifactID(),
 		Artifact:   artifact,
 	}
 	_, err = client.CreateArtifact(ctx, req)

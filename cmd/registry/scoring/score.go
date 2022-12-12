@@ -38,11 +38,10 @@ func scoreID(definitionID string) string {
 func FetchScoreDefinitions(
 	ctx context.Context,
 	client artifactClient,
-	resource patterns.ResourceName) ([]*rpc.Artifact, error) {
+	project string) ([]*rpc.Artifact, error) {
 	defArtifacts := make([]*rpc.Artifact, 0)
 
-	project := fmt.Sprintf("%s/locations/global", resource.Project())
-	artifact, err := names.ParseArtifact(fmt.Sprintf("%s/artifacts/-", project))
+	artifact, err := names.ParseArtifact(fmt.Sprintf("%s/locations/global/artifacts/-", project))
 	if err != nil {
 		return nil, err
 	}
@@ -50,14 +49,10 @@ func FetchScoreDefinitions(
 	err = client.ListArtifacts(ctx, artifact, listFilter, true,
 		func(artifact *rpc.Artifact) error {
 			definition := &rpc.ScoreDefinition{}
-			if err := proto.Unmarshal(artifact.GetContents(), definition); err != nil {
-				return err
-			}
-
-			// Check if ScoreDefinition.TargetResource matches with the supplied resource
-			err := matchResourceWithTarget(definition.GetTargetResource(), resource, project)
-			if err != nil {
-				return err
+			if err1 := proto.Unmarshal(artifact.GetContents(), definition); err1 != nil {
+				// don't return err, to proccess the rest of the artifacts from the list.
+				log.Debugf(ctx, "Skipping definition %q: %s", artifact.GetName(), err1)
+				return nil
 			}
 
 			defArtifacts = append(defArtifacts, artifact)
@@ -77,6 +72,8 @@ func CalculateScore(
 	defArtifact *rpc.Artifact,
 	resource patterns.ResourceInstance,
 	dryRun bool) error {
+	log.Debugf(ctx, "Calculating score for %q with definition %q", resource.ResourceName().String(), defArtifact.GetName())
+
 	project := fmt.Sprintf("%s/locations/global", resource.ResourceName().Project())
 
 	// Extract definition

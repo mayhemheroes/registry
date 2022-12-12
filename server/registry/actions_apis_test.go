@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/apigee/registry/rpc"
 	"github.com/apigee/registry/server/registry/test/seeder"
@@ -841,12 +842,13 @@ func TestListApisSequence(t *testing.T) {
 	}
 }
 
-// This test prevents the list sequence from ending before a known filter match is listed.
+// This test ensures filtering works correctly with paging and prevents the list
+// sequence from ending before a known filter match is listed.
 // For simplicity, it does not guarantee the resource is returned on a later page.
 func TestListApisLargeCollectionFiltering(t *testing.T) {
 	ctx := context.Background()
 	server := defaultTestServer(t)
-	seed := make([]*rpc.Api, 0, 100)
+	seed := make([]*rpc.Api, 0, 1001)
 	for i := 1; i <= cap(seed); i++ {
 		seed = append(seed, &rpc.Api{
 			Name: fmt.Sprintf("projects/my-project/locations/global/apis/a%03d", i),
@@ -857,23 +859,80 @@ func TestListApisLargeCollectionFiltering(t *testing.T) {
 		t.Fatalf("Setup/Seeding: Failed to seed registry: %s", err)
 	}
 
-	req := &rpc.ListApisRequest{
-		Parent:   "projects/my-project/locations/global",
-		PageSize: 1,
-		Filter:   "name == 'projects/my-project/locations/global/apis/a099'",
+	tests := []struct {
+		desc          string
+		req           *rpc.ListApisRequest
+		wantCount     int
+		wantPageToken bool
+	}{
+		{
+			desc: "single select, single page",
+			req: &rpc.ListApisRequest{
+				Parent:   "projects/my-project/locations/global",
+				PageSize: 1,
+				Filter:   "name == 'projects/my-project/locations/global/apis/a099'",
+			},
+			wantCount:     1,
+			wantPageToken: false,
+		},
+		{
+			desc: "multiple select, single page",
+			req: &rpc.ListApisRequest{
+				Parent:   "projects/my-project/locations/global",
+				PageSize: 1000,
+				Filter:   "name != 'projects/my-project/locations/global/apis/a099'",
+			},
+			wantCount:     1000,
+			wantPageToken: false,
+		},
+		{
+			desc: "multiple select, mutiple pages",
+			req: &rpc.ListApisRequest{
+				Parent:   "projects/my-project/locations/global",
+				PageSize: 10,
+				Filter:   "name != 'projects/my-project/locations/global/apis/a099'",
+			},
+			wantCount:     10,
+			wantPageToken: true,
+		},
+		{
+			desc: "max select, multiple pages",
+			req: &rpc.ListApisRequest{
+				Parent:   "projects/my-project/locations/global",
+				PageSize: 1000,
+				Filter:   "name.contains('global')",
+			},
+			wantCount:     1000,
+			wantPageToken: true,
+		},
+		{
+			desc: "coerced max select, multiple pages",
+			req: &rpc.ListApisRequest{
+				Parent:   "projects/my-project/locations/global",
+				PageSize: 1010,
+				Filter:   "name.contains('global')",
+			},
+			wantCount:     1000,
+			wantPageToken: true,
+		},
 	}
 
-	got, err := server.ListApis(ctx, req)
-	if err != nil {
-		t.Fatalf("ListApis(%+v) returned error: %s", req, err)
-	}
+	for _, test := range tests {
+		t.Run(test.desc, func(t *testing.T) {
+			got, err := server.ListApis(ctx, test.req)
+			if err != nil {
+				t.Fatalf("ListApis(%+v) returned error: %s", test.req, err)
+			}
 
-	if len(got.GetApis()) == 1 && got.GetNextPageToken() != "" {
-		t.Errorf("ListApis(%+v) returned a page token when the only matching resource has been listed: %+v", req, got)
-	} else if len(got.GetApis()) == 0 && got.GetNextPageToken() == "" {
-		t.Errorf("ListApis(%+v) returned an empty next page token before listing the only matching resource", req)
-	} else if count := len(got.GetApis()); count > 1 {
-		t.Errorf("ListApis(%+v) returned %d projects, expected at most one: %+v", req, count, got.GetApis())
+			if len(got.GetApis()) != test.wantCount {
+				t.Errorf("ListApis(%+v) expected count: %d, got: %d", test.req, test.wantCount, len(got.Apis))
+			}
+			if got.GetNextPageToken() == "" && test.wantPageToken {
+				t.Errorf("ListApis(%+v) did not return expected page token", test.req)
+			} else if got.GetNextPageToken() != "" && !test.wantPageToken {
+				t.Errorf("ListApis(%+v) returned an unexpected page token", test.req)
+			}
+		})
 	}
 }
 
@@ -1095,6 +1154,89 @@ func TestUpdateApiResponseCodes(t *testing.T) {
 
 			if _, err := server.UpdateApi(ctx, test.req); status.Code(err) != test.want {
 				t.Errorf("UpdateApi(%+v) returned status code %q, want %q: %v", test.req, status.Code(err), test.want, err)
+			}
+		})
+	}
+}
+
+func TestUpdateApiSequence(t *testing.T) {
+	tests := []struct {
+		desc string
+		req  *rpc.UpdateApiRequest
+		want codes.Code
+	}{
+		{
+			desc: "create using update with allow_missing=false",
+			req: &rpc.UpdateApiRequest{
+				Api: &rpc.Api{
+					Name: "projects/my-project/locations/global/apis/a",
+				},
+				AllowMissing: false,
+			},
+			want: codes.NotFound,
+		},
+		{
+			desc: "create using update with allow_missing=true",
+			req: &rpc.UpdateApiRequest{
+				Api: &rpc.Api{
+					Name: "projects/my-project/locations/global/apis/a",
+				},
+				AllowMissing: true,
+			},
+			want: codes.OK,
+		},
+		{
+			desc: "update existing resource with allow_missing=true",
+			req: &rpc.UpdateApiRequest{
+				Api: &rpc.Api{
+					Name: "projects/my-project/locations/global/apis/a",
+				},
+				AllowMissing: true,
+			},
+			want: codes.OK,
+		},
+		{
+			desc: "update existing resource with allow_missing=false",
+			req: &rpc.UpdateApiRequest{
+				Api: &rpc.Api{
+					Name: "projects/my-project/locations/global/apis/a",
+				},
+				AllowMissing: false,
+			},
+			want: codes.OK,
+		},
+	}
+	ctx := context.Background()
+	server := defaultTestServer(t)
+	seed := &rpc.Project{Name: "projects/my-project"}
+	if err := seeder.SeedProjects(ctx, server, seed); err != nil {
+		t.Fatalf("Setup/Seeding: Failed to seed registry: %s", err)
+	}
+	var createTime time.Time
+	var updateTime time.Time
+	// NOTE: in the following sequence of tests, each test depends on its predecessor.
+	// Resources are successively created and updated using the "Update" RPC and the
+	// tests verify that CreateTime/UpdateTime fields are modified appropriately.
+	for i, test := range tests {
+		t.Run(test.desc, func(t *testing.T) {
+			var result *rpc.Api
+			var err error
+			if result, err = server.UpdateApi(ctx, test.req); status.Code(err) != test.want {
+				t.Errorf("UpdateApi(%+v) returned status code %q, want %q: %v", test.req, status.Code(err), test.want, err)
+			}
+			if result != nil {
+				if i == 1 {
+					createTime = result.CreateTime.AsTime()
+					updateTime = result.UpdateTime.AsTime()
+				} else {
+					if !createTime.Equal(result.CreateTime.AsTime()) {
+						t.Errorf("UpdateApi create time changed after update (%v %v)", createTime, result.CreateTime.AsTime())
+					}
+					if !updateTime.Before(result.UpdateTime.AsTime()) {
+						t.Errorf("UpdateApi update time did not increase after update (%v %v)", updateTime, result.UpdateTime.AsTime())
+					}
+					updateTime = result.UpdateTime.AsTime()
+				}
 			}
 		})
 	}

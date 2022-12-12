@@ -47,7 +47,11 @@ func revisionsCommand() *cobra.Command {
 				log.FromContext(ctx).WithError(err).Fatal("Failed to get client")
 			}
 			// Initialize task queue.
-			taskQueue, wait := core.WorkerPool(ctx, 64)
+			jobs, err := cmd.Flags().GetInt("jobs")
+			if err != nil {
+				log.FromContext(ctx).WithError(err).Fatal("Failed to get jobs from flags")
+			}
+			taskQueue, wait := core.WorkerPool(ctx, jobs)
 			defer wait()
 			// Generate tasks.
 			if spec, err := names.ParseSpec(args[0]); err == nil {
@@ -94,12 +98,12 @@ func (task *countSpecRevisionsTask) String() string {
 }
 
 func (task *countSpecRevisionsTask) Run(ctx context.Context) error {
-	name, err := names.ParseSpec(task.specName)
+	name, err := names.ParseSpecRevision(task.specName)
 	if err != nil {
 		return err
 	}
 	count := 0
-	err = core.ListSpecRevisions(ctx, task.client, name, func(*rpc.ApiSpec) error {
+	err = core.ListSpecRevisions(ctx, task.client, name, "", func(*rpc.ApiSpec) error {
 		count++
 		return nil
 	})

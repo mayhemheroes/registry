@@ -157,6 +157,51 @@ func TestTagApiSpecRevision(t *testing.T) {
 	})
 }
 
+func TestTagApiSpecRevisionResponseCodes(t *testing.T) {
+	tests := []struct {
+		desc string
+		tag  string
+		want codes.Code
+	}{
+		{
+			desc: "contains uppercase leters",
+			tag:  "TestTag",
+			want: codes.InvalidArgument,
+		},
+		{
+			desc: "single dash",
+			tag:  "-",
+			want: codes.InvalidArgument,
+		},
+		{
+			desc: "valid one-character tag",
+			tag:  "x",
+			want: codes.OK,
+		},
+		{
+			desc: "valid tag",
+			tag:  "latest",
+			want: codes.OK,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.desc, func(t *testing.T) {
+			ctx := context.Background()
+			server := defaultTestServer(t)
+			if err := seeder.SeedSpecs(ctx, server, &rpc.ApiSpec{Name: "projects/my-project/locations/global/apis/a/versions/v/specs/s"}); err != nil {
+				t.Fatalf("Setup/Seeding: Failed to seed registry: %s", err)
+			}
+			if _, err := server.TagApiSpecRevision(ctx, &rpc.TagApiSpecRevisionRequest{
+				Name: "projects/my-project/locations/global/apis/a/versions/v/specs/s",
+				Tag:  test.tag,
+			}); status.Code(err) != test.want {
+				t.Errorf("TagApiSpecRevision(%+v) returned status code %q, want %q: %v", test.tag, status.Code(err), test.want, err)
+			}
+		})
+	}
+}
+
 func TestRollbackApiSpec(t *testing.T) {
 	ctx := context.Background()
 	server := defaultTestServer(t)
@@ -297,7 +342,7 @@ func TestListApiSpecRevisions(t *testing.T) {
 		wantToken bool
 	}{
 		{
-			desc: "single spec",
+			desc: "single spec latest rev",
 			seed: []*rpc.ApiSpec{
 				{
 					Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/my-spec",
@@ -320,6 +365,33 @@ func TestListApiSpecRevisions(t *testing.T) {
 						Hash:      sha256hash(specContents),
 						SizeBytes: int32(len(specContents)),
 					},
+				},
+			},
+		},
+		{
+			desc: "single spec all revs",
+			seed: []*rpc.ApiSpec{
+				{
+					Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/my-spec",
+				},
+				{
+					Name:     "projects/my-project/locations/global/apis/my-api/versions/v1/specs/my-spec",
+					Contents: specContents,
+				},
+				{
+					Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/other-spec",
+				},
+			},
+			req: &rpc.ListApiSpecRevisionsRequest{
+				Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/my-spec@-",
+			},
+			want: &rpc.ListApiSpecRevisionsResponse{
+				ApiSpecs: []*rpc.ApiSpec{
+					{
+						Name:      "projects/my-project/locations/global/apis/my-api/versions/v1/specs/my-spec",
+						Hash:      sha256hash(specContents),
+						SizeBytes: int32(len(specContents)),
+					},
 					{
 						Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/my-spec",
 					},
@@ -327,72 +399,72 @@ func TestListApiSpecRevisions(t *testing.T) {
 			},
 		},
 		{
-			desc: "across multiple specs",
+			desc: "across multiple specs all revs",
 			seed: []*rpc.ApiSpec{
 				{Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/my-spec"},
 				{Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/other-spec"},
 			},
 			req: &rpc.ListApiSpecRevisionsRequest{
-				Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/-",
+				Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/-@-",
 			},
 			want: &rpc.ListApiSpecRevisionsResponse{
 				ApiSpecs: []*rpc.ApiSpec{
-					{Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/other-spec"},
 					{Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/my-spec"},
+					{Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/other-spec"},
 				},
 			},
 		},
 		{
-			desc: "across multiple versions",
+			desc: "across multiple versions all revs",
 			seed: []*rpc.ApiSpec{
 				{Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/my-spec"},
 				{Name: "projects/my-project/locations/global/apis/my-api/versions/v2/specs/my-spec"},
 			},
 			req: &rpc.ListApiSpecRevisionsRequest{
-				Name: "projects/my-project/locations/global/apis/my-api/versions/-/specs/my-spec",
+				Name: "projects/my-project/locations/global/apis/my-api/versions/-/specs/my-spec@-",
 			},
 			want: &rpc.ListApiSpecRevisionsResponse{
 				ApiSpecs: []*rpc.ApiSpec{
-					{Name: "projects/my-project/locations/global/apis/my-api/versions/v2/specs/my-spec"},
 					{Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/my-spec"},
+					{Name: "projects/my-project/locations/global/apis/my-api/versions/v2/specs/my-spec"},
 				},
 			},
 		},
 		{
-			desc: "across multiple apis",
+			desc: "across multiple apis all revs",
 			seed: []*rpc.ApiSpec{
 				{Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/my-spec"},
 				{Name: "projects/my-project/locations/global/apis/other-api/versions/v1/specs/my-spec"},
 			},
 			req: &rpc.ListApiSpecRevisionsRequest{
-				Name: "projects/my-project/locations/global/apis/-/versions/v1/specs/my-spec",
+				Name: "projects/my-project/locations/global/apis/-/versions/v1/specs/my-spec@-",
 			},
 			want: &rpc.ListApiSpecRevisionsResponse{
 				ApiSpecs: []*rpc.ApiSpec{
-					{Name: "projects/my-project/locations/global/apis/other-api/versions/v1/specs/my-spec"},
 					{Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/my-spec"},
+					{Name: "projects/my-project/locations/global/apis/other-api/versions/v1/specs/my-spec"},
 				},
 			},
 		},
 		{
 			admin: true,
-			desc:  "across multiple projects",
+			desc:  "across multiple projects all revs",
 			seed: []*rpc.ApiSpec{
 				{Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/my-spec"},
 				{Name: "projects/other-project/locations/global/apis/my-api/versions/v1/specs/my-spec"},
 			},
 			req: &rpc.ListApiSpecRevisionsRequest{
-				Name: "projects/-/locations/global/apis/my-api/versions/v1/specs/my-spec",
+				Name: "projects/-/locations/global/apis/my-api/versions/v1/specs/my-spec@-",
 			},
 			want: &rpc.ListApiSpecRevisionsResponse{
 				ApiSpecs: []*rpc.ApiSpec{
-					{Name: "projects/other-project/locations/global/apis/my-api/versions/v1/specs/my-spec"},
 					{Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/my-spec"},
+					{Name: "projects/other-project/locations/global/apis/my-api/versions/v1/specs/my-spec"},
 				},
 			},
 		},
 		{
-			desc: "custom page size",
+			desc: "custom page size, single spec all revs",
 			seed: []*rpc.ApiSpec{
 				{
 					Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/my-spec",
@@ -403,7 +475,7 @@ func TestListApiSpecRevisions(t *testing.T) {
 				},
 			},
 			req: &rpc.ListApiSpecRevisionsRequest{
-				Name:     "projects/my-project/locations/global/apis/my-api/versions/v1/specs/my-spec",
+				Name:     "projects/my-project/locations/global/apis/my-api/versions/v1/specs/my-spec@-",
 				PageSize: 1,
 			},
 			want: &rpc.ListApiSpecRevisionsResponse{
@@ -416,6 +488,46 @@ func TestListApiSpecRevisions(t *testing.T) {
 				},
 			},
 			wantToken: true,
+		},
+		{
+			desc: "name filtering",
+			seed: []*rpc.ApiSpec{
+				{Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/spec1"},
+				{
+					Name:        "projects/my-project/locations/global/apis/my-api/versions/v1/specs/spec2",
+					Description: "match",
+				},
+				{Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/spec3"},
+			},
+			req: &rpc.ListApiSpecRevisionsRequest{
+				Name:   "projects/my-project/locations/global/apis/my-api/versions/v1/specs/-@-",
+				Filter: "description == 'match'",
+			},
+			want: &rpc.ListApiSpecRevisionsResponse{
+				ApiSpecs: []*rpc.ApiSpec{
+					{
+						Name:        "projects/my-project/locations/global/apis/my-api/versions/v1/specs/spec2",
+						Description: "match",
+					},
+				},
+			},
+		},
+		{
+			desc: "reverse order",
+			seed: []*rpc.ApiSpec{
+				{Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/my-spec"},
+				{Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/other-spec"},
+			},
+			req: &rpc.ListApiSpecRevisionsRequest{
+				Name:    "projects/my-project/locations/global/apis/my-api/versions/v1/specs/-@-",
+				OrderBy: "name desc",
+			},
+			want: &rpc.ListApiSpecRevisionsResponse{
+				ApiSpecs: []*rpc.ApiSpec{
+					{Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/other-spec"},
+					{Name: "projects/my-project/locations/global/apis/my-api/versions/v1/specs/my-spec"},
+				},
+			},
 		},
 	}
 
@@ -521,7 +633,7 @@ func TestListApiSpecRevisionsSequence(t *testing.T) {
 	var nextToken string
 	t.Run("first page", func(t *testing.T) {
 		req := &rpc.ListApiSpecRevisionsRequest{
-			Name:     firstRevision.GetName(),
+			Name:     firstRevision.GetName() + "@-",
 			PageSize: 1,
 		}
 
@@ -553,7 +665,7 @@ func TestListApiSpecRevisionsSequence(t *testing.T) {
 
 	t.Run("final page", func(t *testing.T) {
 		req := &rpc.ListApiSpecRevisionsRequest{
-			Name:      firstRevision.GetName(),
+			Name:      firstRevision.GetName() + "@-",
 			PageToken: nextToken,
 		}
 

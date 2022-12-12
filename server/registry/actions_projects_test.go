@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/apigee/registry/rpc"
 	"github.com/apigee/registry/server/registry/test/seeder"
@@ -986,6 +987,88 @@ func TestUpdateProjectResponseCodes(t *testing.T) {
 
 			if _, err := server.UpdateProject(ctx, test.req); status.Code(err) != test.want {
 				t.Errorf("UpdateProject(%+v) returned status code %q, want %q: %v", test.req, status.Code(err), test.want, err)
+			}
+		})
+	}
+}
+
+func TestUpdateProjectSequence(t *testing.T) {
+	if adminServiceUnavailable() {
+		t.Skip(testRequiresAdminService)
+	}
+	tests := []struct {
+		desc string
+		req  *rpc.UpdateProjectRequest
+		want codes.Code
+	}{
+		{
+			desc: "create using update with allow_missing=false",
+			req: &rpc.UpdateProjectRequest{
+				Project: &rpc.Project{
+					Name: "projects/my-project",
+				},
+				AllowMissing: false,
+			},
+			want: codes.NotFound,
+		},
+		{
+			desc: "create using update with allow_missing=true",
+			req: &rpc.UpdateProjectRequest{
+				Project: &rpc.Project{
+					Name: "projects/my-project",
+				},
+				AllowMissing: true,
+			},
+			want: codes.OK,
+		},
+		{
+			desc: "update existing resource with allow_missing=true",
+			req: &rpc.UpdateProjectRequest{
+				Project: &rpc.Project{
+					Name: "projects/my-project",
+				},
+				AllowMissing: true,
+			},
+			want: codes.OK,
+		},
+		{
+			desc: "update existing resource with allow_missing=false",
+			req: &rpc.UpdateProjectRequest{
+				Project: &rpc.Project{
+					Name: "projects/my-project",
+				},
+				AllowMissing: false,
+			},
+			want: codes.OK,
+		},
+	}
+	ctx := context.Background()
+	server := defaultTestServer(t)
+	var createTime time.Time
+	var updateTime time.Time
+	// NOTE: in the following sequence of tests, each test depends on its predecessor.
+	// Resources are successively created and updated using the "Update" RPC and the
+	// tests verify that CreateTime/UpdateTime fields are modified appropriately
+	for i, test := range tests {
+		t.Run(test.desc, func(t *testing.T) {
+			var result *rpc.Project
+			var err error
+			if result, err = server.UpdateProject(ctx, test.req); status.Code(err) != test.want {
+				t.Errorf("UpdateProject(%+v) returned status code %q, want %q: %v", test.req, status.Code(err), test.want, err)
+			}
+			if result != nil {
+				if i == 1 {
+					createTime = result.CreateTime.AsTime()
+					updateTime = result.UpdateTime.AsTime()
+				} else {
+					if !createTime.Equal(result.CreateTime.AsTime()) {
+						t.Errorf("UpdateProject create time changed after update (%v %v)", createTime, result.CreateTime.AsTime())
+					}
+					if !updateTime.Before(result.UpdateTime.AsTime()) {
+						t.Errorf("UpdateProject update time did not increase after update (%v %v)", updateTime, result.UpdateTime.AsTime())
+					}
+					updateTime = result.UpdateTime.AsTime()
+				}
 			}
 		})
 	}

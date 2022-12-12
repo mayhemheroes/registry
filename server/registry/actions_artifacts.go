@@ -36,9 +36,13 @@ type artifactParent interface {
 func parseArtifactParent(name string) (artifactParent, error) {
 	if s, err := names.ParseSpec(name); err == nil {
 		return s, nil
+	} else if s, err := names.ParseSpecRevision(name); err == nil {
+		return s, nil
 	} else if v, err := names.ParseVersion(name); err == nil {
 		return v, nil
 	} else if d, err := names.ParseDeployment(name); err == nil {
+		return d, nil
+	} else if d, err := names.ParseDeploymentRevision(name); err == nil {
 		return d, nil
 	} else if a, err := names.ParseApi(name); err == nil {
 		return a, nil
@@ -60,30 +64,43 @@ func (s *RegistryServer) CreateArtifact(ctx context.Context, req *rpc.CreateArti
 	if req.GetArtifact() == nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid artifact %+v: body must be provided", req.GetArtifact())
 	}
-	// Artifact name must be valid.
-	name := parent.Artifact(req.GetArtifactId())
-	if err := name.Validate(); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
 	var response *rpc.Artifact
 	if err := s.runInTransaction(ctx, func(ctx context.Context, db *storage.Client) error {
 		// Creation should only succeed when the parent exists.
 		var err error
-		switch parent := parent.(type) {
+		switch typedParent := parent.(type) {
 		case names.Project:
-			_, err = db.LockProjects(ctx).GetProject(ctx, parent)
+			_, err = db.LockProjects(ctx).GetProject(ctx, typedParent)
 		case names.Api:
-			_, err = db.LockApis(ctx).GetApi(ctx, parent)
+			_, err = db.LockApis(ctx).GetApi(ctx, typedParent)
 		case names.Version:
-			_, err = db.LockVersions(ctx).GetVersion(ctx, parent)
+			_, err = db.LockVersions(ctx).GetVersion(ctx, typedParent)
 		case names.Spec:
-			_, err = db.LockSpecs(ctx).GetSpec(ctx, parent)
+			// assign to latest revision
+			var spec *models.Spec
+			spec, err = db.LockSpecs(ctx).GetSpec(ctx, typedParent)
+			if err == nil {
+				parent = parent.(names.Spec).Revision(spec.RevisionID)
+			}
+		case names.SpecRevision:
+			_, err = db.LockSpecs(ctx).GetSpecRevision(ctx, typedParent)
 		case names.Deployment:
-			_, err = db.LockDeployments(ctx).GetDeployment(ctx, parent)
+			// assign to latest revision
+			var deployment *models.Deployment
+			deployment, err = db.LockDeployments(ctx).GetDeployment(ctx, typedParent)
+			if err == nil {
+				parent = parent.(names.Deployment).Revision(deployment.RevisionID)
+			}
 		}
 		if err != nil {
 			return err
 		}
+		// Artifact name must be valid.
+		name := parent.Artifact(req.GetArtifactId())
+		if err := name.Validate(); err != nil {
+			return status.Error(codes.InvalidArgument, err.Error())
+		}
+
 		artifact, err := models.NewArtifact(name, req.GetArtifact())
 		if err != nil {
 			return err
@@ -94,8 +111,8 @@ func (s *RegistryServer) CreateArtifact(ctx context.Context, req *rpc.CreateArti
 		if err := db.SaveArtifactContents(ctx, artifact, req.Artifact.GetContents()); err != nil {
 			return err
 		}
-		response = artifact.Message()
-		return nil
+		response, err = artifact.Message()
+		return err
 	}); err != nil {
 		return nil, err
 	}
@@ -137,7 +154,12 @@ func (s *RegistryServer) GetArtifact(ctx context.Context, req *rpc.GetArtifactRe
 		return nil, err
 	}
 
-	return artifact.Message(), nil
+	message, err := artifact.Message()
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	return message, nil
 }
 
 // GetArtifactContents handles the corresponding API request.
@@ -226,8 +248,22 @@ func (s *RegistryServer) ListArtifacts(ctx context.Context, req *rpc.ListArtifac
 			Order:  req.GetOrderBy(),
 			Token:  req.GetPageToken(),
 		})
+	case names.SpecRevision:
+		listing, err = db.ListSpecRevisionArtifacts(ctx, parent, storage.PageOptions{
+			Size:   req.GetPageSize(),
+			Filter: req.GetFilter(),
+			Order:  req.GetOrderBy(),
+			Token:  req.GetPageToken(),
+		})
 	case names.Deployment:
 		listing, err = db.ListDeploymentArtifacts(ctx, parent, storage.PageOptions{
+			Size:   req.GetPageSize(),
+			Filter: req.GetFilter(),
+			Order:  req.GetOrderBy(),
+			Token:  req.GetPageToken(),
+		})
+	case names.DeploymentRevision:
+		listing, err = db.ListDeploymentRevisionArtifacts(ctx, parent, storage.PageOptions{
 			Size:   req.GetPageSize(),
 			Filter: req.GetFilter(),
 			Order:  req.GetOrderBy(),
@@ -244,7 +280,10 @@ func (s *RegistryServer) ListArtifacts(ctx context.Context, req *rpc.ListArtifac
 	}
 
 	for i, artifact := range listing.Artifacts {
-		response.Artifacts[i] = artifact.Message()
+		response.Artifacts[i], err = artifact.Message()
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
 	}
 
 	return response, nil
@@ -265,13 +304,16 @@ func (s *RegistryServer) ReplaceArtifact(ctx context.Context, req *rpc.ReplaceAr
 	var artifact *models.Artifact
 	err = db.Transaction(ctx, func(ctx context.Context, db *storage.Client) error {
 		// Replacement should only succeed on artifacts that currently exist.
-		if _, err = db.GetArtifact(ctx, name, true); err != nil {
+		art, err := db.GetArtifact(ctx, name, true)
+		if err != nil {
 			return err
 		}
 		artifact, err = models.NewArtifact(name, req.GetArtifact())
 		if err != nil {
 			return err
 		}
+		artifact.CreateTime = art.CreateTime // preserve creation time
+		artifact.RevisionID = art.RevisionID // revision is optional in request
 		if err := db.SaveArtifact(ctx, artifact); err != nil {
 			return err
 		}
@@ -282,5 +324,5 @@ func (s *RegistryServer) ReplaceArtifact(ctx context.Context, req *rpc.ReplaceAr
 	}
 
 	s.notify(ctx, rpc.Notification_UPDATED, name.String())
-	return artifact.Message(), nil
+	return artifact.Message()
 }
